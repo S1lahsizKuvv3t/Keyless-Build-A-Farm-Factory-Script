@@ -17,12 +17,18 @@ local _T = {
     AutoRoll = false, AntiAFK = true
 }
 
+-- CANLI İSTATİSTİK HAFIZASI
+local sessionStats = {
+    Rolls = 0,
+    Planted = 0
+}
+
 local TargetSeeds = {}
 local DeleteSeeds = {}
 
 local Tier1Seeds = {"Strawberry Seeds", "Carrot Seeds", "Tomato Seeds", "Corn Seeds", "Blueberry Seeds", "Potato Seeds"}
-local Tier2Seeds = {"Sugarcane Seeds", "Watermelon Seeds", "Blackberry Seeds", "Beet Seeds", "Kiwi Seeds", "Pineapple Seeds", "Prickly Pear Seeds"}
-local AllSeeds = {"Strawberry Seeds", "Carrot Seeds", "Tomato Seeds", "Corn Seeds", "Blueberry Seeds", "Potato Seeds", "Sugarcane Seeds", "Watermelon Seeds", "Blackberry Seeds", "Beet Seeds", "Kiwi Seeds", "Pineapple Seeds", "Prickly Pear Seeds"}
+local Tier2Seeds = {"Sugarcane Seeds", "Watermelon Seeds", "Blackberry Seeds", "Beet Seeds", "Kiwi Seeds", "Pineapple Seeds", "Prickly Pear Seeds", "Dragon Fruit", "DragonFruit"}
+local AllSeeds = {"Strawberry Seeds", "Carrot Seeds", "Tomato Seeds", "Corn Seeds", "Blueberry Seeds", "Potato Seeds", "Sugarcane Seeds", "Watermelon Seeds", "Blackberry Seeds", "Beet Seeds", "Kiwi Seeds", "Pineapple Seeds", "Prickly Pear Seeds", "Dragon Fruit", "DragonFruit"}
 local BoardUpgrades = {"UpgradeCaps", "MutationMultiplier", "Click", "SeedLuck", "SprinkerPower", "Rolls"}
 local HoneyUpgrades = {"PollinationBoost", "PollinationTime"}
 
@@ -36,22 +42,57 @@ local function EquipToolFromList(list)
     local lowerList = {}
     for i, name in ipairs(list) do lowerList[i] = string.lower(name) end
 
-    local function checkAndEquip(parent)
+    local foundTools = {}
+    local toolCounts = {} 
+
+    local function collectTools(parent)
         for _, tool in ipairs(parent:GetChildren()) do
             if tool:IsA("Tool") then
                 local toolName = string.lower(tool.Name)
                 for _, name in ipairs(lowerList) do
                     if string.find(toolName, name) then
-                        humanoid:EquipTool(tool)
-                        return true
+                        table.insert(foundTools, tool)
+                        toolCounts[tool.Name] = (toolCounts[tool.Name] or 0) + 1
+                        break
                     end
                 end
             end
         end
-        return false
     end
 
-    return checkAndEquip(backpack) or checkAndEquip(char)
+    collectTools(backpack)
+    collectTools(char)
+
+    if #foundTools == 0 then return false end
+
+    local toolWeights = {}
+    for _, tool in ipairs(foundTools) do
+        local explicitAmount = nil
+        for _, v in ipairs(tool:GetChildren()) do
+            if v:IsA("IntValue") or v:IsA("NumberValue") then
+                local n = string.lower(v.Name)
+                if n == "amount" or n == "quantity" or n == "count" or n == "stack" or n == "value" then
+                    explicitAmount = v.Value
+                    break
+                end
+            end
+        end
+        toolWeights[tool] = explicitAmount or toolCounts[tool.Name] or 0
+    end
+
+    table.sort(foundTools, function(a, b)
+        return toolWeights[a] < toolWeights[b]
+    end)
+
+    local bestTool = foundTools[1]
+    
+    local currentTool = char:FindFirstChildOfClass("Tool")
+    if currentTool and currentTool == bestTool then
+        return true
+    end
+
+    humanoid:EquipTool(bestTool)
+    return true
 end
 
 local function WipeSelectedItems(selectedList)
@@ -93,18 +134,53 @@ end
 local Window = Rayfield:CreateWindow({
    Name = "Zenith Hub",
    LoadingTitle = "Zenith Hub",
-   LoadingSubtitle = "Premium Automation",
+   LoadingSubtitle = "YGT Premium Automation",
    ConfigurationSaving = {Enabled = false},
    KeySystem = false,
    Keybind = Enum.KeyCode.LessThan
 })
 
+local TabStats = Window:CreateTab("Live Stats", 4483362458)
 local TabFarm = Window:CreateTab("Auto-Farming", 4483362458)
 local TabPlant = Window:CreateTab("Auto-Plant", 4483362458)
 local TabUpgrades = Window:CreateTab("Upgrades", 4483362458)
 local TabRolling = Window:CreateTab("Seed Rolling", 4483362458)
 local TabInventory = Window:CreateTab("Auto-Sell", 4483362458)
 local TabSettings = Window:CreateTab("Settings", 4483362458)
+
+-- TAB 0 LIVE STATS (CANLI İSTATİSTİKLER)
+TabStats:CreateSection("Zenith Session Tracker")
+
+local LblTime = TabStats:CreateLabel("Session Time: 00:00:00")
+local LblBalance = TabStats:CreateLabel("Current Balance: $0")
+local LblPlants = TabStats:CreateLabel("Script Planted: 0")
+local LblRolls = TabStats:CreateLabel("Script Rolls: 0")
+
+task.spawn(function()
+    while task.wait(1) do
+        -- Süre Hesaplama
+        local currentTime = os.time()
+        local joinTime = LocalPlayer:GetAttribute("JoinTime") or currentTime
+        local elapsed = math.floor(currentTime - joinTime)
+        local hours = math.floor(elapsed / 3600)
+        local mins = math.floor((elapsed % 3600) / 60)
+        local secs = elapsed % 60
+        LblTime:Set(string.format("Session Time: %02d:%02d:%02d", hours, mins, secs))
+
+        -- Para Hesaplama
+        local cashFolder = LocalPlayer:FindFirstChild("leaderstats")
+        local cashVal = cashFolder and cashFolder:FindFirstChild("Cash")
+        local cash = cashVal and cashVal.Value or 0
+        
+        -- Sayıyı virgülle ayırma formatı (Premium görünüm)
+        local formattedCash = tostring(cash):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
+        LblBalance:Set("Current Balance: $" .. formattedCash)
+
+        -- Script Hafızası
+        LblPlants:Set("Script Planted: " .. tostring(sessionStats.Planted))
+        LblRolls:Set("Script Rolls: " .. tostring(sessionStats.Rolls))
+    end
+end)
 
 -- TAB 1 AUTO-FARMING 
 TabFarm:CreateSection("Primary Farming Actions")
@@ -123,7 +199,7 @@ TabFarm:CreateToggle({
                       for _, tile in ipairs(plot.Tiles:GetChildren()) do
                           if not _T.AutoClick then break end
                           Comm.ClickPlant:FireServer(tile)
-                          task.wait(0.03)
+                          task.wait(0.05) 
                       end
                   end
               end)
@@ -166,20 +242,30 @@ TabPlant:CreateToggle({
           while _T.AutoPlantTier1 do
               pcall(function()
                   local plot = PlotsFolder:FindFirstChild(playerName)
-                  if plot and EquipToolFromList(Tier1Seeds) then
+                  if plot then
+                      local emptyTiles = {}
                       for _, tile in ipairs(plot.Tiles:GetChildren()) do
-                          if #tile:GetChildren() == 0 then Comm.Plant:FireServer(tile) end
+                          if #tile:GetChildren() == 0 then table.insert(emptyTiles, tile) end
+                      end
+
+                      if #emptyTiles > 0 and EquipToolFromList(Tier1Seeds) then
+                          for _, tile in ipairs(emptyTiles) do
+                              if not _T.AutoPlantTier1 then break end
+                              Comm.Plant:FireServer(tile)
+                              sessionStats.Planted = sessionStats.Planted + 1 -- SAYAÇ EKLENDİ
+                              task.wait(0.05) 
+                          end
                       end
                   end
               end)
-              task.wait(1)
+              task.wait(0.2)
           end
       end)
    end,
 })
 
 TabPlant:CreateToggle({
-   Name = "Auto Plant Epic to Secret Seeds",
+   Name = "Auto Plant Epic to God Seeds",
    CurrentValue = false,
    Flag = "t_plant2",
    Callback = function(Value)
@@ -188,13 +274,23 @@ TabPlant:CreateToggle({
           while _T.AutoPlantTier2 do
               pcall(function()
                   local plot = PlotsFolder:FindFirstChild(playerName)
-                  if plot and EquipToolFromList(Tier2Seeds) then
+                  if plot then
+                      local emptyTiles = {}
                       for _, tile in ipairs(plot.Tiles:GetChildren()) do
-                          if #tile:GetChildren() == 0 then Comm.Plant:FireServer(tile) end
+                          if #tile:GetChildren() == 0 then table.insert(emptyTiles, tile) end
+                      end
+
+                      if #emptyTiles > 0 and EquipToolFromList(Tier2Seeds) then
+                          for _, tile in ipairs(emptyTiles) do
+                              if not _T.AutoPlantTier2 then break end
+                              Comm.Plant:FireServer(tile)
+                              sessionStats.Planted = sessionStats.Planted + 1 -- SAYAÇ EKLENDİ
+                              task.wait(0.05)
+                          end
                       end
                   end
               end)
-              task.wait(1)
+              task.wait(0.2)
           end
       end)
    end,
@@ -210,13 +306,23 @@ TabPlant:CreateToggle({
           while _T.AutoPlantAll do
               pcall(function()
                   local plot = PlotsFolder:FindFirstChild(playerName)
-                  if plot and EquipToolFromList(AllSeeds) then
+                  if plot then
+                      local emptyTiles = {}
                       for _, tile in ipairs(plot.Tiles:GetChildren()) do
-                          if #tile:GetChildren() == 0 then Comm.Plant:FireServer(tile) end
+                          if #tile:GetChildren() == 0 then table.insert(emptyTiles, tile) end
+                      end
+
+                      if #emptyTiles > 0 and EquipToolFromList(AllSeeds) then
+                          for _, tile in ipairs(emptyTiles) do
+                              if not _T.AutoPlantAll then break end
+                              Comm.Plant:FireServer(tile)
+                              sessionStats.Planted = sessionStats.Planted + 1 -- SAYAÇ EKLENDİ
+                              task.wait(0.05)
+                          end
                       end
                   end
               end)
-              task.wait(1)
+              task.wait(0.2)
           end
       end)
    end,
@@ -224,7 +330,7 @@ TabPlant:CreateToggle({
 
 TabPlant:CreateParagraph({
    Title = "ℹ️ Auto Plant Details",
-   Content = "Auto Plant Common to Rare Seeds: Auto equips and plants your tier one seeds onto empty tiles.\n\nAuto Plant Epic to Secret Seeds: Auto equips and plants your tier two seeds onto empty tiles.\n\nAuto Plant All Seeds: Auto equips and plants any available seeds onto empty tiles."
+   Content = "Auto Plant Common to Rare Seeds: Auto equips and plants your tier one seeds onto empty tiles.\n\nAuto Plant Epic to God Seeds: Auto equips and plants your tier two (including God) seeds onto empty tiles.\n\nAuto Plant All Seeds: Auto equips and plants any available seeds onto empty tiles."
 })
 
 -- TAB 3 UPGRADES 
@@ -315,11 +421,12 @@ TabRolling:CreateToggle({
           while _T.AutoRoll do
               local success, result = pcall(function() return Comm.DoRoll:InvokeServer() end)
               if success and type(result) == "table" then
+                  sessionStats.Rolls = sessionStats.Rolls + 1 -- SAYAÇ EKLENDİ
                   for i, v in pairs(result) do
                       if type(v) == "table" and v.Type then
                           local rolledName = tostring(v.Type)
                           for j = 1, #TargetSeeds do
-                              if rolledName:find(TargetSeeds[j]) then
+                              if string.find(string.lower(rolledName), string.lower(TargetSeeds[j])) then
                                   Rayfield:Notify({Title = "Target Hit and Bought", Content = "Claimed " .. rolledName, Duration = 3})
                                   pcall(function() Comm.BuySeeds:FireServer(i) end) 
                                   task.wait(0.5)
@@ -339,7 +446,12 @@ TabRolling:CreateButton({ Name = "Reset Seed Selection", Callback = function() T
 
 TabRolling:CreateSection("General Rolling")
 
-TabRolling:CreateButton({ Name = "Manual Instant Roll Once", Callback = function() pcall(function() Comm.DoRoll:InvokeServer() end) end })
+TabRolling:CreateButton({ Name = "Manual Instant Roll Once", Callback = function() 
+    pcall(function() 
+        Comm.DoRoll:InvokeServer() 
+        sessionStats.Rolls = sessionStats.Rolls + 1 -- SAYAÇ EKLENDİ
+    end) 
+end })
 
 TabRolling:CreateParagraph({
    Title = "ℹ️ Seed Details",
