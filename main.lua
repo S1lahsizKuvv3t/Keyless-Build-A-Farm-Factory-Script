@@ -14,8 +14,35 @@ local _T = {
     AutoClick = false, AutoSellCrates = false, 
     AutoPlantTier1 = false, AutoPlantTier2 = false, AutoPlantAll = false,
     PrestigeLoop = false, BuyAll = false, AutoStar = false, 
-    AutoRoll = false, AntiAFK = true
+    AutoRoll = false, AntiAFK = true, AutoRejoin = false
 }
+
+local HttpService = game:GetService("HttpService")
+local configFileName = "ZewittHub_Hafiza.json"
+
+-- OYUN AÇILDIĞINDA ESKİ AYARLARI OKU VE YÜKLE
+if isfile and isfile(configFileName) and readfile then
+    pcall(function()
+        local savedData = HttpService:JSONDecode(readfile(configFileName))
+        for ayarAdi, deger in pairs(savedData) do
+            -- Hafızadaki değerleri tablomuzla eşleştir
+            if _T[ayarAdi] ~= nil then
+                _T[ayarAdi] = deger
+            end
+        end
+    end)
+end
+
+-- ARKA PLANDA HER 5 SANİYEDE BİR AYARLARI BİLGİSAYARA KAYDET
+task.spawn(function()
+    if writefile then
+        while task.wait(5) do
+            pcall(function()
+                writefile(configFileName, HttpService:JSONEncode(_T))
+            end)
+        end
+    end
+end)
 
 -- CANLI İSTATİSTİK HAFIZASI
 local sessionStats = {
@@ -23,12 +50,165 @@ local sessionStats = {
     Planted = 0
 }
 
+local HttpService = game:GetService("HttpService")
+local REPORT_URL = "https://ntfy.sh/zewitt_farm_report_45"
+local COMMAND_URL = "https://ntfy.sh/zewitt_komut_45"
+
+-- EXPLOIT İNTERNET MOTORU
+local httprequest = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+
+local function SendZewittReport()
+    if not httprequest then return end
+
+    local currentTime = os.time()
+    local joinTime = LocalPlayer:GetAttribute("JoinTime") or currentTime
+    local elapsed = math.floor(currentTime - joinTime)
+    local h = math.floor(elapsed / 3600)
+    local m = math.floor((elapsed % 3600) / 60)
+    local timeStr = string.format("%02d saat %02d dk", h, m)
+
+    local cashFolder = LocalPlayer:FindFirstChild("leaderstats")
+    local cash = (cashFolder and cashFolder:FindFirstChild("Cash")) and cashFolder.Cash.Value or 0
+
+    local inventoryData = {}
+
+    -- 1. GİZLİ KLASÖR TARAMASI
+    pcall(function()
+        for _, folder in ipairs(LocalPlayer:GetChildren()) do
+            local fn = string.lower(folder.Name)
+            if folder:IsA("Folder") and (fn == "inventory" or fn == "data" or fn == "items" or fn == "seeds") then
+                for _, itemVal in ipairs(folder:GetChildren()) do
+                    if itemVal:IsA("IntValue") or itemVal:IsA("NumberValue") then
+                        inventoryData[itemVal.Name] = itemVal.Value
+                    end
+                end
+            end
+        end
+    end)
+
+    -- 2. ÇANTA VE ARAYÜZ (UI) TARAMASI
+    local function countItems(parent)
+        for _, item in ipairs(parent:GetChildren()) do
+            if item:IsA("Tool") then
+                local finalAmount = 1
+                
+                -- A. Derin Dosya Taraması
+                for _, v in ipairs(item:GetDescendants()) do
+                    if v:IsA("IntValue") or v:IsA("NumberValue") then
+                        local n = string.lower(v.Name)
+                        if n == "amount" or n == "quantity" or n == "count" or n == "value" or n == "stack" then
+                            finalAmount = tonumber(v.Value) or 1
+                        end
+                    end
+                end
+
+                -- B. Attribute Taraması
+                if finalAmount == 1 then
+                    for k, v in pairs(item:GetAttributes()) do
+                        if type(v) == "number" then
+                            local n = string.lower(k)
+                            if string.find(n, "count") or string.find(n, "amount") or string.find(n, "value") then
+                                finalAmount = v
+                            end
+                        end
+                    end
+                end
+
+                -- C. UI (Ekranda Yazan Sayı) Taraması
+                if finalAmount == 1 then
+                    pcall(function()
+                        local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+                        if pGui then
+                            for _, guiObj in ipairs(pGui:GetDescendants()) do
+                                if guiObj:IsA("TextLabel") and (string.find(guiObj.Text, "x%d+") or tonumber(guiObj.Text)) then
+                                    local parentName = guiObj.Parent and guiObj.Parent.Name or ""
+                                    -- Yazı kutusu eşyanın ismiyle bir şekilde bağlantılı mı kontrol et
+                                    if string.find(string.lower(parentName), string.lower(item.Name)) or string.find(string.lower(guiObj.Name), string.lower(item.Name)) then
+                                        local cleanedText = string.gsub(guiObj.Text, "x", "")
+                                        finalAmount = tonumber(cleanedText) or 1
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                end
+
+                -- D. Listeye Ekleme
+                if not inventoryData[item.Name] or finalAmount > 1 then
+                    inventoryData[item.Name] = (inventoryData[item.Name] or 0) + finalAmount
+                else
+                    if finalAmount ~= 1 or not inventoryData[item.Name] then
+                        inventoryData[item.Name] = (inventoryData[item.Name] or 0) + finalAmount
+                    end
+                end
+            end
+        end
+    end
+
+    countItems(LocalPlayer.Backpack)
+    if LocalPlayer.Character then countItems(LocalPlayer.Character) end
+
+    -- 3. RAPORU OLUŞTUR
+    local invStr = ""
+    for name, count in pairs(inventoryData) do
+        invStr = invStr .. "\n- " .. name .. ": " .. count .. " adet"
+    end
+    if invStr == "" then invStr = "\n(Envanter şu an boş)" end
+
+    local pPlanted = (sessionStats and sessionStats.Planted) or 0
+    local pRolls = (sessionStats and sessionStats.Rolls) or 0
+
+    local reportBody = string.format(
+        "📊 ZEWITT HUB ANLIK DURUM\n" ..
+        "----------------------------\n" ..
+        "⏱ Aktif Süre: %s\n" ..
+        "💰 Güncel Bakiye: $%d\n" ..
+        "🌱 Toplam Ekilen: %d\n" ..
+        "🎰 Yapılan Roll: %d\n\n" ..
+        "📦 ENVANTER DETAYLARI:%s",
+        timeStr, cash, pPlanted, pRolls, invStr
+    )
+
+    pcall(function()
+        httprequest({
+            Url = REPORT_URL,
+            Method = "POST",
+            Body = reportBody,
+            Headers = {
+                ["Content-Type"] = "text/plain"
+            }
+        })
+    end)
+end
+
+-- TELEFONDAN KOMUT DİNLEME RADARI
+local lastCommandTime = os.time()
+task.spawn(function()
+    if not httprequest then return end
+    while task.wait(10) do 
+        pcall(function()
+            local response = httprequest({
+                Url = COMMAND_URL .. "/raw?poll=1&since=" .. lastCommandTime,
+                Method = "GET"
+            })
+            
+            if response and response.StatusCode == 200 and response.Body and response.Body ~= "" then
+                lastCommandTime = os.time() 
+                if string.find(string.lower(response.Body), "veri") then
+                    SendZewittReport()
+                end
+            end
+        end)
+    end
+end)
+
 local TargetSeeds = {}
 local DeleteSeeds = {}
 
 local Tier1Seeds = {"Strawberry Seeds", "Carrot Seeds", "Tomato Seeds", "Corn Seeds", "Blueberry Seeds", "Potato Seeds"}
-local Tier2Seeds = {"Sugarcane Seeds", "Watermelon Seeds", "Blackberry Seeds", "Beet Seeds", "Kiwi Seeds", "Pineapple Seeds", "Prickly Pear Seeds", "Dragon Fruit", "DragonFruit"}
-local AllSeeds = {"Strawberry Seeds", "Carrot Seeds", "Tomato Seeds", "Corn Seeds", "Blueberry Seeds", "Potato Seeds", "Sugarcane Seeds", "Watermelon Seeds", "Blackberry Seeds", "Beet Seeds", "Kiwi Seeds", "Pineapple Seeds", "Prickly Pear Seeds", "Dragon Fruit", "DragonFruit"}
+local Tier2Seeds = {"Sugarcane Seeds", "Watermelon Seeds", "Blackberry Seeds", "Beet Seeds", "Kiwi Seeds", "Pineapple Seeds", "Prickly Pear Seeds", "Dragon Fruit"}
+local AllSeeds = {"Strawberry Seeds", "Carrot Seeds", "Tomato Seeds", "Corn Seeds", "Blueberry Seeds", "Potato Seeds", "Sugarcane Seeds", "Watermelon Seeds", "Blackberry Seeds", "Beet Seeds", "Kiwi Seeds", "Pineapple Seeds", "Prickly Pear Seeds", "Dragon Fruit"}
 local BoardUpgrades = {"UpgradeCaps", "MutationMultiplier", "Click", "SeedLuck", "SprinkerPower", "Rolls"}
 local HoneyUpgrades = {"PollinationBoost", "PollinationTime"}
 
@@ -199,11 +379,11 @@ TabFarm:CreateToggle({
                       for _, tile in ipairs(plot.Tiles:GetChildren()) do
                           if not _T.AutoClick then break end
                           Comm.ClickPlant:FireServer(tile)
-                          task.wait(0.05) 
+                          task.wait() -- LİMİT KALDIRILDI (FPS HIZI)
                       end
                   end
               end)
-              task.wait(0.1)
+              task.wait() -- DÖNGÜ GECİKMESİ KALDIRILDI
           end
       end)
    end,
@@ -252,13 +432,13 @@ TabPlant:CreateToggle({
                           for _, tile in ipairs(emptyTiles) do
                               if not _T.AutoPlantTier1 then break end
                               Comm.Plant:FireServer(tile)
-                              sessionStats.Planted = sessionStats.Planted + 1 -- SAYAÇ EKLENDİ
-                              task.wait(0.05) 
+                              sessionStats.Planted = sessionStats.Planted + 1
+                              task.wait() -- LİMİT KALDIRILDI
                           end
                       end
                   end
               end)
-              task.wait(0.2)
+              task.wait() -- DÖNGÜ GECİKMESİ KALDIRILDI
           end
       end)
    end,
@@ -284,13 +464,13 @@ TabPlant:CreateToggle({
                           for _, tile in ipairs(emptyTiles) do
                               if not _T.AutoPlantTier2 then break end
                               Comm.Plant:FireServer(tile)
-                              sessionStats.Planted = sessionStats.Planted + 1 -- SAYAÇ EKLENDİ
-                              task.wait(0.05)
+                              sessionStats.Planted = sessionStats.Planted + 1
+                              task.wait() -- LİMİT KALDIRILDI
                           end
                       end
                   end
               end)
-              task.wait(0.2)
+              task.wait() -- DÖNGÜ GECİKMESİ KALDIRILDI
           end
       end)
    end,
@@ -316,13 +496,13 @@ TabPlant:CreateToggle({
                           for _, tile in ipairs(emptyTiles) do
                               if not _T.AutoPlantAll then break end
                               Comm.Plant:FireServer(tile)
-                              sessionStats.Planted = sessionStats.Planted + 1 -- SAYAÇ EKLENDİ
-                              task.wait(0.05)
+                              sessionStats.Planted = sessionStats.Planted + 1
+                              task.wait() -- LİMİT KALDIRILDI
                           end
                       end
                   end
               end)
-              task.wait(0.2)
+              task.wait() -- DÖNGÜ GECİKMESİ KALDIRILDI
           end
       end)
    end,
@@ -421,22 +601,29 @@ TabRolling:CreateToggle({
           while _T.AutoRoll do
               local success, result = pcall(function() return Comm.DoRoll:InvokeServer() end)
               if success and type(result) == "table" then
-                  sessionStats.Rolls = sessionStats.Rolls + 1 -- SAYAÇ EKLENDİ
+                  sessionStats.Rolls = sessionStats.Rolls + 1
                   for i, v in pairs(result) do
                       if type(v) == "table" and v.Type then
                           local rolledName = tostring(v.Type)
                           for j = 1, #TargetSeeds do
-                              if string.find(string.lower(rolledName), string.lower(TargetSeeds[j])) then
+                              local cleanRolled = string.gsub(string.lower(rolledName), "%s+", "")
+                              local cleanTarget = string.gsub(string.lower(TargetSeeds[j]), "%s+", "")
+
+                              if string.find(cleanRolled, cleanTarget) then
                                   Rayfield:Notify({Title = "Target Hit and Bought", Content = "Claimed " .. rolledName, Duration = 3})
                                   pcall(function() Comm.BuySeeds:FireServer(i) end) 
-                                  task.wait(0.5)
+                                  
+                                  -- TURBO MOD: Satın aldıktan sonra 0.5 yerine 0.1 saniye bekle
+                                  task.wait(0.1)
                                   break
                               end
                           end
                       end
                   end
               end
-              task.wait(0.5)
+              
+              -- TURBO MOD: Her çark çevirmede 0.5 yerine 0.05 saniye bekle (Işık hızı)
+              task.wait(0.05)
           end
       end)
    end,
@@ -480,15 +667,6 @@ TabSettings:CreateToggle({
    Callback = function(Value) _T.AntiAFK = Value end,
 })
 
-TabSettings:CreateButton({
-   Name = "Redeem All Promo Codes",
-   Callback = function()
-       pcall(function()
-           Comm.RedeemCode:InvokeServer("BUZZ BUZZ")
-           Rayfield:Notify({Title = "Codes Redeemed", Content = "Successfully triggered all current game codes", Duration = 3})
-       end)
-   end,
-})
 
 TabSettings:CreateButton({
    Name = "Destroy Script and UI",
@@ -503,11 +681,175 @@ TabSettings:CreateParagraph({
    Content = "Anti AFK: Auto captures inputs in the background to prevent Roblox from kicking you for idling.\n\nRedeem All Promo Codes: Auto redeems all active game promo codes for rewards instantly.\n\nDestroy Script and UI: Auto removes the entire cheat interface from your screen safely."
 })
 
-Players.LocalPlayer.Idled:Connect(function()
-    if _T.AntiAFK then
-        VirtualUser:CaptureController()
+TabSettings:CreateSection("Premium PC Koruması")
+
+local UserInputService = game:GetService("UserInputService")
+local blackScreenGui = nil
+
+-- Toggle'ı dışarıdan kontrol edebilmek için önce değişken olarak tanımlıyoruz
+local cpuSaverToggle
+
+cpuSaverToggle = TabSettings:CreateToggle({
+   Name = "CPU/GPU Saver (Black Screen)",
+   CurrentValue = false,
+   Flag = "t_cpusaver",
+   Callback = function(Value)
+      if Value then
+          -- Siyah ekran oluştur
+          blackScreenGui = Instance.new("ScreenGui")
+          blackScreenGui.Name = "ZewittBlackScreen"
+          blackScreenGui.IgnoreGuiInset = true
+          blackScreenGui.DisplayOrder = 99999
+          
+          local success = pcall(function() blackScreenGui.Parent = game:GetService("CoreGui") end)
+          if not success then blackScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+          local bg = Instance.new("Frame")
+          bg.Size = UDim2.new(1, 0, 1, 0)
+          bg.BackgroundColor3 = Color3.new(0, 0, 0)
+          bg.Parent = blackScreenGui
+
+          local txt = Instance.new("TextLabel")
+          txt.Size = UDim2.new(1, 0, 1, 0)
+          txt.Position = UDim2.new(0, 0, -0.1, 0)
+          txt.BackgroundTransparency = 1
+          txt.TextColor3 = Color3.new(1, 1, 1)
+          txt.TextSize = 24
+          txt.Font = Enum.Font.Code
+          txt.Text = "Zewitt Hub Premium - CPU/GPU Saver Active\n\nArka planda farm tam gaz devam ediyor...\nEkranı açmak için aşağıdaki butona tıkla veya 'F4' tuşuna bas."
+          txt.Parent = bg
+
+          -- Minimalist ve Şık Uyandırma Butonu
+          local wakeBtn = Instance.new("TextButton")
+          wakeBtn.Size = UDim2.new(0, 250, 0, 50)
+          wakeBtn.Position = UDim2.new(0.5, -125, 0.6, 0)
+          wakeBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+          wakeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+          wakeBtn.Font = Enum.Font.GothamBold
+          wakeBtn.TextSize = 16
+          wakeBtn.Text = "EKRANI UYANDIR (F4)"
+          wakeBtn.Parent = bg
+
+          local corner = Instance.new("UICorner")
+          corner.CornerRadius = UDim.new(0, 6)
+          corner.Parent = wakeBtn
+          
+          local stroke = Instance.new("UIStroke")
+          stroke.Color = Color3.fromRGB(100, 100, 100)
+          stroke.Thickness = 1
+          stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+          stroke.Parent = wakeBtn
+
+          -- Butona tıklama motoru (Sadece Toggle'ı kapatır, gerisini Toggle halleder)
+          wakeBtn.MouseButton1Click:Connect(function()
+              if cpuSaverToggle then
+                  cpuSaverToggle:Set(false)
+              end
+          end)
+
+          -- Grafikleri en düşüğe çek
+          settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+          Rayfield:Notify({Title = "Saver Active", Content = "Screen disabled to save PC resources.", Duration = 3})
+      else
+          -- Toggle kapatıldığında (İster fareyle, ister butonla, ister F4 ile) temizliği burası yapar
+          if blackScreenGui then blackScreenGui:Destroy() end
+          settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+          Rayfield:Notify({Title = "Saver Disabled", Content = "Ekran başarıyla uyandırıldı.", Duration = 3})
+      end
+   end,
+})
+
+-- F4 TUŞU İLE EKRANI UYANDIRMA KISAYOLU
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if input.KeyCode == Enum.KeyCode.F4 then
+        if blackScreenGui and blackScreenGui.Parent ~= nil then
+            -- Siyah ekran açıksa, Toggle'a kapat sinyali gönder
+            if cpuSaverToggle then
+                cpuSaverToggle:Set(false)
+            end
+        end
+    end
+end)
+
+local TeleportService = game:GetService("TeleportService")
+TabSettings:CreateToggle({
+   Name = "Auto Rejoin (Crash Recovery)",
+   CurrentValue = false,
+   Flag = "t_rejoin",
+   Callback = function(Value)
+       _T.AutoRejoin = Value
+   end,
+})
+
+TabSettings:CreateButton({
+   Name = "Manual Rejoin (Hemen Bağlan)",
+   Callback = function()
+       Rayfield:Notify({Title = "Yeniden Bağlanılıyor", Content = "Mevcut sunucuya tekrar giriş yapılıyor, lütfen bekle...", Duration = 5})
+       
+       -- Bağlantıyı koparıp aynı sunucuya (JobId) anında geri fırlatır
+       task.spawn(function()
+           task.wait(0.5)
+           local TeleportService = game:GetService("TeleportService")
+           TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+       end)
+   end,
+})
+
+TabSettings:CreateParagraph({
+   Title = "ℹ️ Premium Koruma Detayları",
+   Content = "CPU/GPU Saver: Oyunu tamamen siyah bir ekrana çevirir ve grafikleri en düşüğe çeker. Ekran kartını dondurucu soğuklukta tutar.\n\nAuto Rejoin: İnternet veya sunucu koparsa 5 saniye bekleyip oyuna otomatik geri bağlanır."
+})
+
+-- OTOMATİK YENİDEN BAĞLANMA (AUTO REJOIN) MOTORU
+task.spawn(function()
+    local promptOverlay = game:GetService("CoreGui"):FindFirstChild("RobloxPromptGui")
+    if promptOverlay then
+        local overlay = promptOverlay:FindFirstChild("promptOverlay")
+        if overlay then
+            overlay.ChildAdded:Connect(function(child)
+                if _T.AutoRejoin and child.Name == 'ErrorPrompt' then
+                    -- Ekranda bağlantı koptu hatası çıkarsa 5 saniye bekle ve aynı sunucuya tekrar zıpla
+                    task.wait(5)
+                    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+                end
+            end)
+        end
+    end
+end)
+
+-- 20 SANİYELİK KESİN ZIPLAMA VE ANTI-AFK MOTORU
+task.spawn(function()
+    local VirtualUser = game:GetService("VirtualUser")
+    
+    -- Oyunun AFK atmasını engelleyen sanal tıklama
+    LocalPlayer.Idled:Connect(function()
         VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
         task.wait(1)
         VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    end)
+
+    -- Her 20 saniyede bir zorunlu zıplama döngüsü
+    while task.wait(60) do 
+        if _T.AntiAFK then
+            pcall(function()
+                -- Karakteri her döngüde yeniden bul (ölme veya rejoin durumunda bozulmaması için)
+                local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+                if char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        -- Hem normal komutu hem de fiziksel state komutunu aynı anda yolluyoruz
+                        hum.Jump = true
+                        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+Players.LocalPlayer.Idled:Connect(function()
+    if _T.AntiAFK then
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
     end
 end)
