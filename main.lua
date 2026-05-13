@@ -57,6 +57,157 @@ local COMMAND_URL = "https://ntfy.sh/zewitt_komut_45"
 -- EXPLOIT İNTERNET MOTORU
 local httprequest = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
 
+local function SendZewittReport()
+    if not httprequest then return end
+
+    local currentTime = os.time()
+    local joinTime = LocalPlayer:GetAttribute("JoinTime") or currentTime
+    local elapsed = math.floor(currentTime - joinTime)
+    local h = math.floor(elapsed / 3600)
+    local m = math.floor((elapsed % 3600) / 60)
+    local timeStr = string.format("%02d saat %02d dk", h, m)
+
+    local cashFolder = LocalPlayer:FindFirstChild("leaderstats")
+    local cash = (cashFolder and cashFolder:FindFirstChild("Cash")) and cashFolder.Cash.Value or 0
+
+    local inventoryData = {}
+
+    -- 1. GİZLİ KLASÖR TARAMASI
+    pcall(function()
+        for _, folder in ipairs(LocalPlayer:GetChildren()) do
+            local fn = string.lower(folder.Name)
+            if folder:IsA("Folder") and (fn == "inventory" or fn == "data" or fn == "items" or fn == "seeds") then
+                for _, itemVal in ipairs(folder:GetChildren()) do
+                    if itemVal:IsA("IntValue") or itemVal:IsA("NumberValue") then
+                        inventoryData[itemVal.Name] = itemVal.Value
+                    end
+                end
+            end
+        end
+    end)
+
+    -- 2. ÇANTA VE ARAYÜZ (UI) TARAMASI
+    local function countItems(parent)
+        for _, item in ipairs(parent:GetChildren()) do
+            if item:IsA("Tool") then
+                local finalAmount = 1
+                
+                -- A. Derin Dosya Taraması
+                for _, v in ipairs(item:GetDescendants()) do
+                    if v:IsA("IntValue") or v:IsA("NumberValue") then
+                        local n = string.lower(v.Name)
+                        if n == "amount" or n == "quantity" or n == "count" or n == "value" or n == "stack" then
+                            finalAmount = tonumber(v.Value) or 1
+                        end
+                    end
+                end
+
+                -- B. Attribute Taraması
+                if finalAmount == 1 then
+                    for k, v in pairs(item:GetAttributes()) do
+                        if type(v) == "number" then
+                            local n = string.lower(k)
+                            if string.find(n, "count") or string.find(n, "amount") or string.find(n, "value") then
+                                finalAmount = v
+                            end
+                        end
+                    end
+                end
+
+                -- C. UI (Ekranda Yazan Sayı) Taraması
+                if finalAmount == 1 then
+                    pcall(function()
+                        local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+                        if pGui then
+                            for _, guiObj in ipairs(pGui:GetDescendants()) do
+                                if guiObj:IsA("TextLabel") and (string.find(guiObj.Text, "x%d+") or tonumber(guiObj.Text)) then
+                                    local parentName = guiObj.Parent and guiObj.Parent.Name or ""
+                                    -- Yazı kutusu eşyanın ismiyle bir şekilde bağlantılı mı kontrol et
+                                    if string.find(string.lower(parentName), string.lower(item.Name)) or string.find(string.lower(guiObj.Name), string.lower(item.Name)) then
+                                        local cleanedText = string.gsub(guiObj.Text, "x", "")
+                                        finalAmount = tonumber(cleanedText) or 1
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                end
+
+                -- D. Listeye Ekleme
+                if not inventoryData[item.Name] or finalAmount > 1 then
+                    inventoryData[item.Name] = (inventoryData[item.Name] or 0) + finalAmount
+                else
+                    if finalAmount ~= 1 or not inventoryData[item.Name] then
+                        inventoryData[item.Name] = (inventoryData[item.Name] or 0) + finalAmount
+                    end
+                end
+            end
+        end
+    end
+
+    countItems(LocalPlayer.Backpack)
+    if LocalPlayer.Character then countItems(LocalPlayer.Character) end
+
+    -- 3. RAPORU OLUŞTUR
+    local invStr = ""
+    for name, count in pairs(inventoryData) do
+        invStr = invStr .. "\n- " .. name .. ": " .. count .. " adet"
+    end
+    if invStr == "" then invStr = "\n(Envanter şu an boş)" end
+
+    local pPlanted = (sessionStats and sessionStats.Planted) or 0
+    local pRolls = (sessionStats and sessionStats.Rolls) or 0
+
+	local deviceType = (game:GetService("UserInputService").TouchEnabled and "Mobil" or "PC")
+
+	local reportBody = string.format(
+    	"📂 ZENITH ISTIHBARAT DOSYASI\n" ..
+    	"----------------------------\n" ..
+    	"👤 Oyuncu: %s\n" ..
+    	"📱 Cihaz: %s\n" ..
+    	"⏱ Aktif Süre: %s\n" ..
+    	"💰 Güncel Bakiye: $%d\n" ..
+    	"🎰 Yapılan Roll: %d\n" ..
+    	"🆔 Server: %s\n" ..
+    	"----------------------------\n" ..
+    	"📦 ENVANTER DETAYLARI:%s",
+    	playerName, deviceType, timeStr, cash, pRolls, game.JobId:sub(1,8), invStr
+	)
+
+    pcall(function()
+        httprequest({
+            Url = REPORT_URL,
+            Method = "POST",
+            Body = reportBody,
+            Headers = {
+                ["Content-Type"] = "text/plain"
+            }
+        })
+    end)
+end
+
+-- TELEFONDAN KOMUT DİNLEME RADARI
+local lastCommandTime = os.time()
+task.spawn(function()
+    if not httprequest then return end
+    while task.wait(10) do 
+        pcall(function()
+            local response = httprequest({
+                Url = COMMAND_URL .. "/raw?poll=1&since=" .. lastCommandTime,
+                Method = "GET"
+            })
+            
+            if response and response.StatusCode == 200 and response.Body and response.Body ~= "" then
+                lastCommandTime = os.time() 
+                if string.find(string.lower(response.Body), "veri") then
+                    SendZewittReport()
+                end
+            end
+        end)
+    end
+end)
+
 local TargetSeeds = {}
 local DeleteSeeds = {}
 
@@ -653,6 +804,34 @@ TabSettings:CreateParagraph({
    Title = "ℹ️ Premium Koruma Detayları",
    Content = "CPU/GPU Saver: Oyunu tamamen siyah bir ekrana çevirir ve grafikleri en düşüğe çeker. Ekran kartını dondurucu soğuklukta tutar.\n\nAuto Rejoin: İnternet veya sunucu koparsa 5 saniye bekleyip oyuna otomatik geri bağlanır."
 })
+
+TabSettings:CreateSection("Mobil Bildirim Ayarları")
+
+TabSettings:CreateButton({
+   Name = "Şu Anki Durumu Telefona Gönder",
+   Callback = function()
+       SendZewittReport()
+       Rayfield:Notify({Title = "Rapor Gönderildi", Content = "Telefonundaki ntfy uygulamasını kontrol et.", Duration = 3})
+   end,
+})
+
+TabSettings:CreateToggle({
+   Name = "Saatlik Otomatik Rapor",
+   CurrentValue = false,
+   Flag = "t_autoreport",
+   Callback = function(Value)
+      _T.AutoReport = Value
+   end,
+})
+
+-- OTOMATİK RAPOR DÖNGÜSÜ (Her 60 Dakikada Bir)
+task.spawn(function()
+    while task.wait(3600) do
+        if _T.AutoReport then
+            SendZewittReport()
+        end
+    end
+end)
 
 -- OTOMATİK YENİDEN BAĞLANMA (AUTO REJOIN) MOTORU
 task.spawn(function()
